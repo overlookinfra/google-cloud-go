@@ -49,6 +49,8 @@ func TestRangeReader(t *testing.T) {
 		{1, 3, readData[1:4]},
 		{6, -1, readData[6:]},
 		{4, 20, readData[4:]},
+		{-20, -1, readData},
+		{-6, -1, readData[4:]},
 	} {
 		r, err := obj.NewRangeReader(ctx, test.offset, test.length)
 		if err != nil {
@@ -74,17 +76,25 @@ func handleRangeRead(w http.ResponseWriter, r *http.Request) {
 		from = 0
 		to = len(data)
 	} else {
-		// assume "bytes=N-" or "bytes=N-M"
+		// assume "bytes=N-", "bytes=-N" or "bytes=N-M"
 		var err error
 		i := strings.IndexRune(rh, '=')
 		j := strings.IndexRune(rh, '-')
-		from, err = strconv.Atoi(rh[i+1 : j])
+		if i+1 != j {
+			from, err = strconv.Atoi(rh[i+1 : j])
+		} else {
+			from, err = strconv.Atoi(rh[i+1:])
+			from += len(data)
+			if from < 0 {
+				from = 0
+			}
+		}
 		if err != nil {
 			w.WriteHeader(500)
 			return
 		}
 		to = len(data)
-		if j+1 < len(rh) {
+		if i+1 != j && j+1 < len(rh) {
 			to, err = strconv.Atoi(rh[j+1:])
 			if err != nil {
 				w.WriteHeader(500)
@@ -199,6 +209,15 @@ func TestRangeReaderRetry(t *testing.T) {
 				{data: readBytes[9:], counts: []int{1}, err: io.EOF},
 			},
 			want: readData[4:],
+		},
+		{
+			offset: -4,
+			length: -1,
+			bodies: []fakeReadCloser{
+				{data: readBytes[6:], counts: []int{1}, err: retryErr},
+				{data: readBytes[7:], counts: []int{3}, err: io.EOF},
+			},
+			want: readData[6:],
 		},
 	} {
 		r, err := obj.NewRangeReader(ctx, test.offset, test.length)
