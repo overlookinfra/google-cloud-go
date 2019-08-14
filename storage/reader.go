@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,7 @@ import (
 )
 
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
+var contentRangeRegexp = regexp.MustCompile(`\s*bytes\s+(\d+)\s*-\s*(\d+)\s*/\s*(\d+)\s*`)
 
 // ReaderObjectAttrs are attributes about the object being read. These are populated
 // during the New call. This struct only holds a subset of object attributes: to
@@ -42,6 +44,10 @@ var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 type ReaderObjectAttrs struct {
 	// Size is the length of the object's content.
 	Size int64
+
+	// Offset is the byte offset within the object that the reader
+	// begins.
+	Offset int64
 
 	// ContentType is the MIME type of the object's content.
 	ContentType string
@@ -182,16 +188,21 @@ func (o *ObjectHandle) NewRangeReader(ctx context.Context, offset, length int64)
 	}
 	var (
 		size     int64 // total size of object, even if a range was requested.
+		crBegin  int64 // start offset (non-zero if range request)
 		checkCRC bool
 		crc      uint32
 	)
 	if res.StatusCode == http.StatusPartialContent {
-		cr := strings.TrimSpace(res.Header.Get("Content-Range"))
-		if !strings.HasPrefix(cr, "bytes ") || !strings.Contains(cr, "/") {
-
+		cr := res.Header.Get("Content-Range")
+		matches := contentRangeRegexp.FindStringSubmatch(cr)
+		if len(matches) == 0 {
 			return nil, fmt.Errorf("storage: invalid Content-Range %q", cr)
 		}
-		size, err = strconv.ParseInt(cr[strings.LastIndex(cr, "/")+1:], 10, 64)
+		size, err = strconv.ParseInt(matches[3], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("storage: invalid Content-Range %q", cr)
+		}
+		crBegin, err = strconv.ParseInt(matches[1], 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("storage: invalid Content-Range %q", cr)
 		}
@@ -236,6 +247,7 @@ func (o *ObjectHandle) NewRangeReader(ctx context.Context, offset, length int64)
 
 	attrs := ReaderObjectAttrs{
 		Size:            size,
+		Offset:          crBegin,
 		ContentType:     res.Header.Get("Content-Type"),
 		ContentEncoding: res.Header.Get("Content-Encoding"),
 		CacheControl:    res.Header.Get("Cache-Control"),
